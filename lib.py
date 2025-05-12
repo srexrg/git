@@ -59,6 +59,89 @@ argsp.add_argument("path", help="Read object from <file>")
 
 argsp = argsubparsers.add_parser("log", help="Display history of a given commit.")
 argsp.add_argument("commit", default="HEAD", nargs="?", help="Commit to start at.")
+argsp = argsubparsers.add_parser("ls-tree", help="Pretty-print a tree object.")
+argsp.add_argument(
+    "-r", dest="recursive", action="store_true", help="Recurse into sub-trees"
+)
+
+argsp.add_argument("tree", help="A tree-ish object.")
+
+argsp = argsubparsers.add_parser(
+    "checkout", help="Checkout a commit inside of a directory."
+)
+
+argsp.add_argument("commit", help="The commit or tree to checkout.")
+
+argsp.add_argument("path", help="The EMPTY directory to checkout on.")
+
+
+def cmd_checkout(args):
+    repo = repo_find()
+
+    obj = object_read(repo, object_find(repo, args.commit))
+
+    # If the object is a commit, we grab its tree
+    if obj.fmt == b"commit":
+        obj = object_read(repo, obj.kvlm[b"tree"].decode("ascii"))
+
+    # Verify that path is an empty directory
+    if os.path.exists(args.path):
+        if not os.path.isdir(args.path):
+            raise Exception(f"Not a directory {args.path}!")
+        if os.listdir(args.path):
+            raise Exception(f"Not empty {args.path}!")
+    else:
+        os.makedirs(args.path)
+
+    tree_checkout(repo, obj, os.path.realpath(args.path))
+
+
+def tree_checkout(repo, tree, path):
+
+    for item in tree.items:
+        obj = object_read(repo, item.sha)
+        dest = obj.path.join(path, item.sha)
+
+        if obj.fmt == b"tree":
+            os.mkdir(dest)
+            tree_checkout(repo, obj, dest)
+        elif obj.fmt == b"blob":
+            with open(dest, "wb") as f:
+                f.write(obj.blobdata)
+
+
+def cmd_ls_tree(args):
+    repo = repo_find()
+    ls_tree(repo, args.tree, args.recursive)
+
+
+def ls_tree(repo, ref, recursive=None, prefix=""):
+    sha = object_find(repo, ref, fmt=b"tree")
+    obj = object_read(repo, sha)
+    for item in obj.items:
+        if len(item.mode) == 5:
+            type = item.mode[0:1]
+        else:
+            type = item.mode[0:2]
+
+        match type:  # Determine the type.
+            case b"04":
+                type = "tree"
+            case b"10":
+                type = "blob"  # A regular file.
+            case b"12":
+                type = "blob"  # A symlink. Blob contents is link target.
+            case b"16":
+                type = "commit"  # A submodule
+            case _:
+                raise Exception(f"Weird tree leaf mode {item.mode}")
+
+        if not (recursive and type == "tree"):  # This is a leaf
+            print(
+                f"{'0' * (6 - len(item.mode)) + item.mode.decode("ascii")} {type} {item.sha}\t{os.path.join(prefix, item.path)}"
+            )
+        else:  # This is a branch, recurse
+            ls_tree(repo, item.sha, recursive, os.path.join(prefix, item.path))
 
 
 def cmd_log(args):
@@ -202,7 +285,7 @@ class GitRepository(object):
         if not (force or os.path.isdir(self.gitdir)):
             raise Exception(f"Not a Git repository {path}")
 
-        # Read configuration file in .git/config                              
+        # Read configuration file in .git/config
         self.conf = configparser.ConfigParser()
         cf = repo_file(self, "config")
 
@@ -248,11 +331,11 @@ def repo_dir(repo, *path, mkdir=False):
     else:
         return None
 
+
 def repo_create(path):
     """Create a new repository at path"""
 
-    repo=GitRepository(path,True)
-
+    repo = GitRepository(path, True)
 
     if os.path.exists(repo.worktree):
         if not os.path.isdir(repo.worktree):
@@ -268,15 +351,15 @@ def repo_create(path):
     assert repo_dir(repo, "refs", "tags", mkdir=True)
 
     # .git/description
-    with open(repo_file(repo,"HEAD"),"w") as f:
+    with open(repo_file(repo, "HEAD"), "w") as f:
         f.write("Unnamed repo,edit this file 'description' to name the repo.\n ")
 
     # .git/HEAD
-    with open(repo_file(repo,"HEAD"),"w") as f:
+    with open(repo_file(repo, "HEAD"), "w") as f:
         f.write("ref:refs/heads/master\n")
 
-    with open(repo_file(repo,"config"),"w") as f:
-        config=repo_default_config()
+    with open(repo_file(repo, "config"), "w") as f:
+        config = repo_default_config()
         config.write(f)
 
     return repo
@@ -291,24 +374,25 @@ def repo_default_config():
     ret.set("core", "bare", "false")
     return ret
 
-def repo_find(path="",required=True):
 
-    path=os.path.realpath(path)
+def repo_find(path="", required=True):
 
-    if os.path.isdir(os.path.join(path,".git")):
+    path = os.path.realpath(path)
+
+    if os.path.isdir(os.path.join(path, ".git")):
         return GitRepository(path)
 
     # if not returned,recurse in parent,if w
 
-    parent=os.path.realpath(os.path.join(path,".."))
+    parent = os.path.realpath(os.path.join(path, ".."))
 
-    if parent==path:
+    if parent == path:
         if required:
             raise Exception("No git dir")
     else:
         return None
 
-    return repo_find(parent,required=True)
+    return repo_find(parent, required=True)
 
 
 class GitObject(object):
@@ -335,55 +419,61 @@ class GitObject(object):
     def init(self):
         pass  # Just do nothing. This is a reasonable default!
 
-def object_read(repo,sha):
+
+def object_read(repo, sha):
     """Read object sha from Git repository repo.  Return a
     GitObject whose exact type depends on the object."""
 
-    path = repo_file(repo,"objects",sha[0:2],sha[2:])
+    path = repo_file(repo, "objects", sha[0:2], sha[2:])
 
     if not os.path.isfile(path):
         return None
 
-    with open (path,"rb") as f:
-        raw=zlib.decompress(f.read())
+    with open(path, "rb") as f:
+        raw = zlib.decompress(f.read())
 
         # read object type
-        x=raw.find(b' ')
+        x = raw.find(b" ")
         fmt = raw[0:x]
-        y = raw.find(b'\x00', x)
+        y = raw.find(b"\x00", x)
         size = int(raw[x:y].decode("ascii"))
-        if size != len(raw)-y-1:
+        if size != len(raw) - y - 1:
             raise Exception(f"Malformed object {sha}: bad length")
 
         # Pick constructor
         match fmt:
-            case b'commit' : c=GitCommit
-            case b'tree'   : c=GitTree
-            case b'tag'    : c=GitTag
-            case b'blob'   : c=GitBlob
+            case b"commit":
+                c = GitCommit
+            case b"tree":
+                c = GitTree
+            case b"tag":
+                c = GitTag
+            case b"blob":
+                c = GitBlob
             case _:
                 raise Exception(f"Unknown type {fmt.decode("ascii")} for object {sha}")
 
         # Call constructor and return object
-        return c(raw[y+1:])
+        return c(raw[y + 1 :])
 
-def object_write(obj,repo=None):
+
+def object_write(obj, repo=None):
 
     # Seialize obj data
-    data=obj.serialize()
+    data = obj.serialize()
 
     # header
-    result = obj.fmt + b' ' + str(len(data)).encode() + b'\x00' + data
+    result = obj.fmt + b" " + str(len(data)).encode() + b"\x00" + data
 
     # Compute hash
     sha = hashlib.sha1(result).hexdigest()
 
     if repo:
         # Compute path
-        path=repo_file(repo, "objects", sha[0:2], sha[2:], mkdir=True)
+        path = repo_file(repo, "objects", sha[0:2], sha[2:], mkdir=True)
 
         if not os.path.exists(path):
-            with open(path, 'wb') as f:
+            with open(path, "wb") as f:
                 # Compress and write
                 f.write(zlib.compress(result))
     return sha
@@ -479,13 +569,88 @@ def kvlm_serialize(kvlm):
 
 
 class GitCommit(GitObject):
-    fmt=b'commit'
+    fmt = b"commit"
 
     def deserialize(self, data):
-        self.kvlm=kvlm_parse(data)
-    
+        self.kvlm = kvlm_parse(data)
+
     def serialize(self):
         return kvlm_serialize(self.kvlm)
-    
+
     def init(self):
-        self.kvlm=dict()
+        self.kvlm = dict()
+
+
+class GitTreeLeaf(object):
+    def __init__(self, mode, path, sha):
+        self.mode = mode
+        self.path = path
+        self.sha = sha
+
+
+def tree_parse_one(raw, start=0):
+    # Find the space terminator of the mode
+    x = raw.find(b" ", start)
+    assert x - start == 5 or x - start == 6
+
+    # Read the mode
+    mode = raw[start:x]
+    if len(mode) == 5:
+        # Normalize to six bytes.
+        mode = b"0" + mode
+
+    # Find the NULL terminator of the path
+    y = raw.find(b"\x00", x)
+    # and read the path
+    path = raw[x + 1 : y]
+
+    # Read the SHA…
+    raw_sha = int.from_bytes(raw[y + 1 : y + 21], "big")
+    # and convert it into an hex string, padded to 40 chars
+    # with zeros if needed.
+    sha = format(raw_sha, "040x")
+    return y + 21, GitTreeLeaf(mode, path.decode("utf8"), sha)
+
+
+def tree_parse(raw):
+    pos = 0
+    max = len(raw)
+    ret = list()
+    while pos < max:
+        pos, data = tree_parse_one(raw, pos)
+        ret.append(data)
+
+    return ret
+
+
+def tree_leaf_sort_key(leaf):
+    if leaf.mode.startswith(b"10"):
+        return leaf.path
+    else:
+        return leaf.path + "/"
+
+
+def tree_serialize(obj):
+    obj.items.sort(key=tree_leaf_sort_key)
+    ret = b""
+    for i in obj.items:
+        ret += i.mode
+        ret += b" "
+        ret += i.path.encode("utf8")
+        ret += b"\x00"
+        sha = int(i.sha, 16)
+        ret += sha.to_bytes(20, byteorder="big")
+    return ret
+
+
+class GitTree(GitObject):
+    fmt = b"tree"
+
+    def deserialize(self, data):
+        self.items = tree_parse(data)
+
+    def serialize(self):
+        return tree_serialize(self)
+
+    def init(self):
+        self.items = list()
