@@ -798,7 +798,6 @@ class GitTag(GitCommit):
 
 
 def tag_create(repo, name, ref, create_tag_object=False):
-    # get the GitObject from the object reference
     sha = object_find(repo, ref)
 
     if create_tag_object:
@@ -808,8 +807,6 @@ def tag_create(repo, name, ref, create_tag_object=False):
         tag.kvlm[b"object"] = sha.encode()
         tag.kvlm[b"type"] = b"commit"
         tag.kvlm[b"tag"] = name.encode()
-        # Feel free to let the user give their name!
-        # Notice you can fix this after commit, read on!
         tag.kvlm[b"tagger"] = b"Wyag <wyag@example.com>"
         # …and a tag message!
         tag.kvlm[None] = (
