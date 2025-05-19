@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
 
-import lib
-lib.main()
+from core.cli import main
+
+if __name__ == "__main__":
+    main()
